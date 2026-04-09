@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Body
-from fastapi.responses import JSONResponse
-import requests
+from fastapi.responses import JSONResponse, FileResponse
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -12,6 +11,9 @@ import re
 
 app = FastAPI()
 
+# 设置一个临时文件夹来保存我们生成的 Word 文件
+TEMP_DIR = tempfile.gettempdir()
+
 def set_cell_background(cell, color_hex):
     tcPr = cell._tc.get_or_add_tcPr()
     shd = OxmlElement('w:shd')
@@ -21,7 +23,6 @@ def set_cell_background(cell, color_hex):
     tcPr.append(shd)
 
 def parse_inline_bold(paragraph, text):
-    # 确保输入是字符串并处理加粗
     content = str(text) if text else ""
     chunks = content.split('**')
     for i, chunk in enumerate(chunks):
@@ -59,7 +60,6 @@ async def generate_document(
     cell_right = htable.rows[0].cells[1]
     p_right = cell_right.paragraphs[0]
     p_right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    # 处理可能的空值
     p_name = product_name if product_name else "ETERNI Product"
     p_model = product_model if product_model else ""
     run_text = p_right.add_run(f"{p_name}   {p_model}")
@@ -125,23 +125,22 @@ async def generate_document(
             p = doc.add_paragraph()
             parse_inline_bold(p, stripped)
 
-    # --- 3. 保存并上传 ---
-    # 净化文件名，移除空格和特殊字符
+    # --- 3. 核心修改：保存在本地并返回你自己的链接 ---
     clean_model = re.sub(r'[^a-zA-Z0-9]', '_', str(p_model))
+    if not clean_model:
+        clean_model = "Document"
     file_name = f"ETERNI_{clean_model}.docx"
-    temp_path = os.path.join(tempfile.gettempdir(), file_name)
+    
+    # 存在自己服务器的临时文件夹里
+    temp_path = os.path.join(TEMP_DIR, file_name)
     doc.save(temp_path)
     
-    download_url = ""
-    try:
-        with open(temp_path, 'rb') as f:
-            # 使用 Transfer.sh 上传（新加坡节点访问非常快且稳定）
-            response = requests.put(f'https://transfer.sh/{file_name}', data=f, timeout=30)
-            if response.status_code == 200:
-                download_url = response.text.strip()
-            else:
-                download_url = f"Upload Error: {response.status_code}"
-    except Exception as e:
-        download_url = f"Network Error: {str(e)}"
-
+    # 直接拼接出你专属的下载链接！不求别人！
+    download_url = f"https://eterni-msds-api-1.onrender.com/download/{file_name}"
+    
     return {"url": download_url}
+
+# --- 4. 核心修改：新增一个下载接口 ---
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    file_path = os.path

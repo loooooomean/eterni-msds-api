@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Body
-from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
+import requests
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -19,7 +20,7 @@ def set_cell_background(cell, color_hex):
     tcPr.append(shd)
 
 def parse_inline_bold(paragraph, text):
-    chunks = text.split('**')
+    chunks = str(text).split('**')
     for i, chunk in enumerate(chunks):
         run = paragraph.add_run(chunk)
         if i % 2 == 1: 
@@ -32,28 +33,23 @@ async def generate_document(
     product_model: str = Body("Model")
 ):
     doc = Document()
-    
-    # 全局字体强制：Times New Roman
     style = doc.styles['Normal']
     style.font.name = 'Times New Roman'
     style.font.size = Pt(10.5)
     style._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
 
-    # --- 1. 页眉排版 ---
+    # --- 页眉 Logo 与信息 ---
     header = doc.sections[0].header
     htable = header.add_table(1, 2, Inches(6.5))
-    
-    # 左侧：添加 Logo 图片
     cell_left = htable.rows[0].cells[0]
-    logo_path = "logo.png" # 指向仓库中的图片文件
+    
+    # 尝试加载仓库中的 logo.png
+    logo_path = "logo.png"
     if os.path.exists(logo_path):
-        paragraph = cell_left.paragraphs[0]
-        run = paragraph.add_run()
-        run.add_picture(logo_path, width=Inches(1.2)) # 调整图片宽度
+        cell_left.paragraphs[0].add_run().add_picture(logo_path, width=Inches(1.2))
     else:
         cell_left.paragraphs[0].add_run("ETERNI").bold = True 
 
-    # 右侧：动态产品信息
     cell_right = htable.rows[0].cells[1]
     p_right = cell_right.paragraphs[0]
     p_right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -68,11 +64,10 @@ async def generate_document(
     bottom = OxmlElement('w:bottom')
     bottom.set(qn('w:val'), 'single')
     bottom.set(qn('w:sz'), '6')
-    bottom.set(qn('w:color'), 'auto')
     p_pbdr.append(bottom)
     p_pr.append(p_pbdr)
 
-    # --- 2. 动态内容解析 ---
+    # --- 内容解析 ---
     lines = content.split('\n')
     in_table = False
     table_data = []
@@ -80,25 +75,22 @@ async def generate_document(
     for line in lines:
         stripped = line.strip()
         if not stripped: continue
-        
-        # 表格处理
         if stripped.startswith('|') and stripped.endswith('|'):
             in_table = True
             if '---' in stripped: continue
-            row = [cell.strip() for cell in stripped.strip('|').split('|')]
+            row = [c.strip() for c in stripped.strip('|').split('|')]
             table_data.append(row)
             continue
-        
         if in_table and not stripped.startswith('|'):
             if table_data:
                 cols = len(max(table_data, key=len))
                 table = doc.add_table(rows=1, cols=cols)
                 table.style = 'Table Grid'
-                hdr_cells = table.rows[0].cells
                 for i, heading in enumerate(table_data[0]):
-                    if i < len(hdr_cells):
-                        parse_inline_bold(hdr_cells[i].paragraphs[0], heading)
-                        set_cell_background(hdr_cells[i], 'E0E0E0') 
+                    if i < len(table.rows[0].cells):
+                        cell = table.rows[0].cells[i]
+                        parse_inline_bold(cell.paragraphs[0], heading)
+                        set_cell_background(cell, 'E0E0E0') 
                 for row_data in table_data[1:]:
                     row_cells = table.add_row().cells
                     for i, item in enumerate(row_data):
@@ -106,30 +98,35 @@ async def generate_document(
             in_table = False
             table_data = []
 
-        # 标题处理
         if stripped.startswith('# '):
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             run = p.add_run(stripped[2:])
-            run.font.size = Pt(18)
-            run.bold = True
+            run.font.size = Pt(18); run.bold = True
         elif stripped.startswith('## '):
             doc.add_paragraph()
-            sect_table = doc.add_table(rows=1, cols=1)
-            cell = sect_table.rows[0].cells[0]
-            set_cell_background(cell, '0033CC') # 品牌深蓝色
+            table_sect = doc.add_table(rows=1, cols=1)
+            cell = table_sect.rows[0].cells[0]
+            set_cell_background(cell, '0033CC') 
             run = cell.paragraphs[0].add_run(stripped[3:])
-            run.font.color.rgb = RGBColor(255, 255, 255)
-            run.bold = True
+            run.font.color.rgb = RGBColor(255, 255, 255); run.bold = True
         else:
             p = doc.add_paragraph()
             parse_inline_bold(p, stripped)
 
-    # 保存文件
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
-    doc.save(temp_file.name)
-    return FileResponse(
-        temp_file.name, 
-        filename=f"ETERNI_{product_name}.docx",
-        media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    )
+    # --- 保存并上传获取 URL ---
+    temp_path = os.path.join(tempfile.gettempdir(), f"ETERNI_{product_model}.docx")
+    doc.save(temp_path)
+    
+    # 将文件上传到临时托管服务器 (file.io 是免费的)
+    download_url = ""
+    try:
+        with open(temp_path, 'rb') as f:
+            # 上传文件，设置为 14 天有效
+            r = requests.post('https://file.io/?expires=14d', files={'file': f})
+            download_url = r.json().get('link', '')
+    except:
+        download_url = "Upload Failed"
+
+    # 返回 Coze 能读懂的 JSON 格式
+    return {"url": download_url}

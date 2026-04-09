@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_ALIGN_VERTICAL # 新增：用于单元格垂直对齐
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import tempfile
@@ -22,18 +23,17 @@ def set_cell_background(cell, color_hex):
     tcPr.append(shd)
 
 def set_three_line_borders(table):
-    """设置标准的学术三线表边框（上下粗线）"""
     tblBorders = OxmlElement('w:tblBorders')
     
     top = OxmlElement('w:top')
     top.set(qn('w:val'), 'single')
-    top.set(qn('w:sz'), '12')  # 1.5 pt
+    top.set(qn('w:sz'), '12')  
     top.set(qn('w:space'), '0')
     top.set(qn('w:color'), 'auto')
     
     bottom = OxmlElement('w:bottom')
     bottom.set(qn('w:val'), 'single')
-    bottom.set(qn('w:sz'), '12') # 1.5 pt
+    bottom.set(qn('w:sz'), '12') 
     bottom.set(qn('w:space'), '0')
     bottom.set(qn('w:color'), 'auto')
 
@@ -56,24 +56,19 @@ def set_three_line_borders(table):
     table._tbl.tblPr.append(tblBorders)
 
 def set_header_bottom_border(cell):
-    """设置三线表表头的下划线（细线）"""
     tcBorders = OxmlElement('w:tcBorders')
     bottom = OxmlElement('w:bottom')
     bottom.set(qn('w:val'), 'single')
-    bottom.set(qn('w:sz'), '8') # 1.0 pt
+    bottom.set(qn('w:sz'), '8') 
     bottom.set(qn('w:space'), '0')
     bottom.set(qn('w:color'), 'auto')
     tcBorders.append(bottom)
     cell._tc.get_or_add_tcPr().append(tcBorders)
 
 def parse_inline_bold(paragraph, text, product_name=""):
-    """解析文本，自动加粗产品名，并处理 <br> 乱码换行"""
     content = str(text) if text else ""
-    
-    # 处理乱码：将 <br> 或 <br/> 替换为真实的换行符
     content = re.sub(r'<br\s*/?>', '\n', content)
     
-    # 自动对产品名称进行加粗匹配
     if product_name and product_name in content:
         if f"**{product_name}**" not in content:
             content = content.replace(product_name, f"**{product_name}**")
@@ -86,7 +81,6 @@ def parse_inline_bold(paragraph, text, product_name=""):
                 run = paragraph.add_run(sub)
                 if i % 2 == 1: 
                     run.bold = True
-            # Word 里的换行必须用 add_break() 才能生效
             if j < len(sub_chunks) - 1:
                 paragraph.add_run().add_break()
 
@@ -100,14 +94,13 @@ async def generate_document(
     
     # --- 页面与全局样式设置 ---
     section = doc.sections[0]
-    section.header_distance = Cm(0)  # 页眉上边距设为 0 cm
+    section.header_distance = Cm(0)  
     
     style = doc.styles['Normal']
     style.font.name = 'Times New Roman'
     style.font.size = Pt(10.5)
     style._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
     
-    # 行间距 1.5 倍，段前段后 0 距离
     style.paragraph_format.line_spacing = 1.5
     style.paragraph_format.space_before = Pt(0)
     style.paragraph_format.space_after = Pt(0)
@@ -118,9 +111,12 @@ async def generate_document(
     # --- 1. 页眉排版 ---
     header = section.header
     htable = header.add_table(1, 2, Inches(6.5))
-    cell_left = htable.rows[0].cells[0]
     
-    # Logo 变为一半大小：宽 0.6 英寸
+    # 左侧 Logo 靠下对齐
+    cell_left = htable.rows[0].cells[0]
+    cell_left.vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM # 靠下对齐
+    cell_left.paragraphs[0].paragraph_format.space_after = Pt(0) # 消除段后距贴紧底线
+    
     logo_path = "logo.png"
     if os.path.exists(logo_path):
         try:
@@ -130,13 +126,19 @@ async def generate_document(
     else:
         cell_left.paragraphs[0].add_run("ETERNI").bold = True 
 
+    # 右侧文本靠下对齐
     cell_right = htable.rows[0].cells[1]
+    cell_right.vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM # 靠下对齐
+    
     p_right = cell_right.paragraphs[0]
     p_right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p_right.paragraph_format.space_after = Pt(0) # 消除段后距贴紧底线
+    
     run_text = p_right.add_run(f"{p_name}   {p_model}")
     run_text.font.size = Pt(11)
     run_text.font.color.rgb = RGBColor(120, 120, 120) 
     
+    # 页眉横线
     header_para = header.add_paragraph()
     p_pr = header_para._p.get_or_add_pPr()
     p_pbdr = OxmlElement('w:pBdr')
@@ -155,7 +157,6 @@ async def generate_document(
         stripped = line.strip()
         if not stripped: continue
         
-        # 表格数据收集
         if stripped.startswith('|') and stripped.endswith('|'):
             in_table = True
             if '---' in stripped: continue
@@ -163,18 +164,17 @@ async def generate_document(
             table_data.append(row)
             continue
         
-        # 绘制三线表
         if in_table and not stripped.startswith('|'):
             if table_data:
                 cols = len(max(table_data, key=len))
                 table = doc.add_table(rows=1, cols=cols)
-                set_three_line_borders(table) # 应用三线表样式
+                set_three_line_borders(table) 
                 
                 for i, heading in enumerate(table_data[0]):
                     if i < len(table.rows[0].cells):
                         cell = table.rows[0].cells[i]
                         parse_inline_bold(cell.paragraphs[0], heading, p_name)
-                        set_header_bottom_border(cell) # 表头底部加线
+                        set_header_bottom_border(cell) 
                         
                 for row_data in table_data[1:]:
                     row_cells = table.add_row().cells
@@ -184,41 +184,39 @@ async def generate_document(
             in_table = False
             table_data = []
 
-        # 解析 Markdown 语法
         if stripped.startswith('# '):
             p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.LEFT # 靠左对齐
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT 
             
-            # 自动补全品牌和产品名 (如果 LLM 没有写全)
             title_text = stripped[2:]
             if p_name.lower() not in title_text.lower():
                 title_text = f"{title_text}\nETERNI {p_name} {p_model}".strip()
                 
             run = p.add_run(title_text)
-            run.font.size = Pt(18) # 小二字号
+            run.font.size = Pt(18) 
             run.bold = True
             
         elif stripped.startswith('## '):
             doc.add_paragraph() # 二级标题前空行
             table_sect = doc.add_table(rows=1, cols=1)
             cell = table_sect.rows[0].cells[0]
-            set_cell_background(cell, '0033CC') # 蓝底
+            set_cell_background(cell, '0033CC') 
             p = cell.paragraphs[0]
             p.paragraph_format.space_before = Pt(0)
             p.paragraph_format.space_after = Pt(0)
             run = p.add_run(stripped[3:])
-            run.font.size = Pt(14) # 四号字号
-            run.font.color.rgb = RGBColor(255, 255, 255) # 白字
+            run.font.size = Pt(14) 
+            run.font.color.rgb = RGBColor(255, 255, 255) 
             run.bold = True
+            doc.add_paragraph() # 新增：二级标题后空行
             
         elif stripped.startswith('### '):
             p = doc.add_paragraph()
             run = p.add_run(stripped[4:])
-            run.font.size = Pt(12) # 小四字号
+            run.font.size = Pt(12) 
             run.bold = True
             
         elif stripped.startswith('- ') or stripped.startswith('* '):
-            # 圆点分点列表
             p = doc.add_paragraph(style='List Bullet')
             parse_inline_bold(p, stripped[2:], p_name)
             

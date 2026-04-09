@@ -141,6 +141,28 @@ async def generate_document(
     return {"url": download_url}
 
 # --- 4. 核心修改：新增一个下载接口 ---
+# ... 之前的代码保持不变 ...
+
+# 核心修改：新增一个更强大的下载接口
 @app.get("/download/{filename}")
 async def download_file(filename: str):
-    file_path = os.path
+    # 确保从正确的临时目录查找
+    file_path = os.path.join(TEMP_DIR, filename)
+    
+    if os.path.exists(file_path):
+        # 增加 Content-Disposition 响应头，强制浏览器弹出“另存为”窗口，而不是直接打开
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+        return FileResponse(
+            path=file_path, 
+            filename=filename, 
+            media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            headers=headers
+        )
+    
+    # 如果找不到文件，返回一个明确的 JSON 错误，方便我们排查
+    return JSONResponse(
+        status_code=404, 
+        content={"error": f"File {filename} not found on server."}
+    )

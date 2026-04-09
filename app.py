@@ -40,7 +40,7 @@ def set_three_line_borders(table):
     tblPr.append(tblBorders)
 
 def set_header_border(cell):
-    """设置表头下方的细线 (1.0pt)"""
+    """设置表头下方的细线"""
     tcPr = cell._tc.get_or_add_tcPr()
     tcBorders = OxmlElement('w:tcBorders')
     bottom = OxmlElement('w:bottom')
@@ -56,7 +56,7 @@ def add_separator_line(paragraph):
     pBdr = OxmlElement('w:pBdr')
     bottom = OxmlElement('w:bottom')
     bottom.set(qn('w:val'), 'single')
-    bottom.set(qn('w:sz'), '6') # 0.75pt
+    bottom.set(qn('w:sz'), '6')
     bottom.set(qn('w:space'), '1')
     bottom.set(qn('w:color'), 'auto')
     pBdr.append(bottom)
@@ -64,7 +64,6 @@ def add_separator_line(paragraph):
 
 def parse_content(paragraph, text, product_name=""):
     """解析内容，处理换行乱码，剔除 XML 崩溃字符，自动加粗产品名"""
-    # 【防护】剔除所有会导致 Word 崩溃的不可见控制字符
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(text))
     content = text.replace('\\n', '\n').replace('<br>', '\n').replace('<br/>', '\n')
     
@@ -87,9 +86,8 @@ async def generate_document(
     product_name: str = Body(""),
     product_model: str = Body("")
 ):
-    # ------------------ 防弹清洗逻辑 ------------------
+    # --- 防弹清洗逻辑 ---
     raw = content.strip().replace('```json', '').replace('```', '')
-    
     if raw.startswith('"') and raw.endswith('"'):
         try: raw = json.loads(raw)
         except: pass
@@ -105,7 +103,6 @@ async def generate_document(
     
     content = str(raw).replace('\\n', '\n')
     content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
-    # --------------------------------------------------
 
     doc = Document()
     section = doc.sections[0]
@@ -121,7 +118,6 @@ async def generate_document(
 
     # 1. 页眉排版
     header = section.header
-    # 页眉的 add_table 允许设定宽度，所以不会报错
     htable = header.add_table(1, 2, Inches(6.5))
     htable.rows[0].cells[0].vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM
     htable.rows[0].cells[1].vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM
@@ -141,6 +137,10 @@ async def generate_document(
     lines = content.split('\n')
     in_table = False
     table_data = []
+    
+    # 获取 Word 默认自带的首个空行，用于吃掉多余的顶部空白
+    first_p = doc.paragraphs[0]
+    first_p_used = False
 
     for line in lines:
         stripped = line.strip()
@@ -154,7 +154,7 @@ async def generate_document(
         
         if in_table and not stripped.startswith('|'):
             if table_data and len(table_data) > 0:
-                # 动态获取最大列数，防止大模型表格错位导致越界崩溃
+                first_p_used = True # 若表格开头，标记占用
                 max_cols = max(len(row) for row in table_data)
                 if max_cols > 0:
                     table = doc.add_table(rows=len(table_data), cols=max_cols)
@@ -168,30 +168,38 @@ async def generate_document(
             in_table = False; table_data = []
 
         if stripped.startswith('# '): 
-            p = doc.add_paragraph()
+            # 巧妙复用首行，消除顶部巨大缝隙
+            if not first_p_used:
+                p = first_p
+                first_p_used = True
+            else:
+                p = doc.add_paragraph()
+                
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
             title = stripped[2:]
             today = datetime.now().strftime("%B %d, %Y")
             
-            # 【修复】使用 add_break() 确保大标题的换行完美生效
             run1 = p.add_run(title)
             run1.font.size = Pt(18); run1.bold = True
             p.add_run().add_break()
             
+            # 修改为 15pt (小三号)
             run2 = p.add_run(f"ETERNI {product_name}")
-            run2.font.size = Pt(18); run2.bold = True
+            run2.font.size = Pt(15); run2.bold = True
             p.add_run().add_break()
             
+            # 修改为 15pt (小三号)
             run3 = p.add_run(f"Issue Date: {today}")
-            run3.font.size = Pt(18); run3.bold = True
+            run3.font.size = Pt(15); run3.bold = True
             
             add_separator_line(doc.add_paragraph()) 
 
         elif stripped.startswith('## '): 
-            doc.add_paragraph() 
+            if not first_p_used:
+                first_p_used = True
+            else:
+                doc.add_paragraph() 
             add_separator_line(doc.add_paragraph()) 
-            
-            # 【核心修复】删除了 Inches(6.5)，防止底层样式识别错误导致 500 崩溃
             t_h2 = doc.add_table(1, 1) 
             cell = t_h2.rows[0].cells[0]
             set_cell_background(cell, '0033CC')
@@ -202,18 +210,30 @@ async def generate_document(
             doc.add_paragraph() 
 
         elif stripped.startswith('### '): 
-            run = doc.add_paragraph().add_run(stripped[4:])
+            if not first_p_used:
+                p = first_p
+                first_p_used = True
+            else:
+                doc.add_paragraph() # 强制在子标题 (1.1) 前插入空行
+                p = doc.add_paragraph()
+                
+            run = p.add_run(stripped[4:])
             run.font.size = Pt(12); run.bold = True
 
         else:
-            p = doc.add_paragraph()
+            if not first_p_used:
+                p = first_p
+                first_p_used = True
+            else:
+                p = doc.add_paragraph()
+                
             if stripped.startswith(('- ', '* ')):
                 p.style = 'List Bullet'
                 parse_content(p, stripped[2:], product_name)
             else:
                 parse_content(p, stripped, product_name)
 
-    # 兜底：如果文件刚好以表格结尾，强制渲染
+    # 兜底：如果文件刚好以表格结尾
     if in_table and table_data and len(table_data) > 0:
         max_cols = max(len(row) for row in table_data)
         if max_cols > 0:
@@ -226,7 +246,6 @@ async def generate_document(
                         parse_content(cell.paragraphs[0], val, product_name)
                         if r_idx == 0: set_header_border(cell)
 
-    # 3. 保存与下载
     file_name = f"ETERNI_{re.sub(r'[^a-zA-Z0-9]', '_', product_model)}.docx"
     path = os.path.join(TEMP_DIR, file_name)
     doc.save(path)

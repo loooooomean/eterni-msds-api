@@ -8,6 +8,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import tempfile
 import os
+import re
 
 app = FastAPI()
 
@@ -20,7 +21,9 @@ def set_cell_background(cell, color_hex):
     tcPr.append(shd)
 
 def parse_inline_bold(paragraph, text):
-    chunks = str(text).split('**')
+    # 确保输入是字符串并处理加粗
+    content = str(text) if text else ""
+    chunks = content.split('**')
     for i, chunk in enumerate(chunks):
         run = paragraph.add_run(chunk)
         if i % 2 == 1: 
@@ -38,22 +41,28 @@ async def generate_document(
     style.font.size = Pt(10.5)
     style._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
 
-    # --- 页眉 Logo 与信息 ---
+    # --- 1. 页眉排版 ---
     header = doc.sections[0].header
     htable = header.add_table(1, 2, Inches(6.5))
     cell_left = htable.rows[0].cells[0]
     
-    # 尝试加载仓库中的 logo.png
+    # 加载仓库中的 logo.png
     logo_path = "logo.png"
     if os.path.exists(logo_path):
-        cell_left.paragraphs[0].add_run().add_picture(logo_path, width=Inches(1.2))
+        try:
+            cell_left.paragraphs[0].add_run().add_picture(logo_path, width=Inches(1.2))
+        except:
+            cell_left.paragraphs[0].add_run("ETERNI").bold = True 
     else:
         cell_left.paragraphs[0].add_run("ETERNI").bold = True 
 
     cell_right = htable.rows[0].cells[1]
     p_right = cell_right.paragraphs[0]
     p_right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run_text = p_right.add_run(f"{product_name}   {product_model}")
+    # 处理可能的空值
+    p_name = product_name if product_name else "ETERNI Product"
+    p_model = product_model if product_model else ""
+    run_text = p_right.add_run(f"{p_name}   {p_model}")
     run_text.font.size = Pt(11)
     run_text.font.color.rgb = RGBColor(120, 120, 120) 
     
@@ -67,7 +76,7 @@ async def generate_document(
     p_pbdr.append(bottom)
     p_pr.append(p_pbdr)
 
-    # --- 内容解析 ---
+    # --- 2. 动态内容解析 ---
     lines = content.split('\n')
     in_table = False
     table_data = []
@@ -75,12 +84,14 @@ async def generate_document(
     for line in lines:
         stripped = line.strip()
         if not stripped: continue
+        
         if stripped.startswith('|') and stripped.endswith('|'):
             in_table = True
             if '---' in stripped: continue
             row = [c.strip() for c in stripped.strip('|').split('|')]
             table_data.append(row)
             continue
+        
         if in_table and not stripped.startswith('|'):
             if table_data:
                 cols = len(max(table_data, key=len))
@@ -114,19 +125,23 @@ async def generate_document(
             p = doc.add_paragraph()
             parse_inline_bold(p, stripped)
 
-    # --- 保存并上传获取 URL ---
-    temp_path = os.path.join(tempfile.gettempdir(), f"ETERNI_{product_model}.docx")
+    # --- 3. 保存并上传 ---
+    # 净化文件名，移除空格和特殊字符
+    clean_model = re.sub(r'[^a-zA-Z0-9]', '_', str(p_model))
+    file_name = f"ETERNI_{clean_model}.docx"
+    temp_path = os.path.join(tempfile.gettempdir(), file_name)
     doc.save(temp_path)
     
-    # 将文件上传到临时托管服务器 (file.io 是免费的)
     download_url = ""
     try:
         with open(temp_path, 'rb') as f:
-            # 上传文件，设置为 14 天有效
-            r = requests.post('https://file.io/?expires=14d', files={'file': f})
-            download_url = r.json().get('link', '')
-    except:
-        download_url = "Upload Failed"
+            # 使用 Transfer.sh 上传（新加坡节点访问非常快且稳定）
+            response = requests.put(f'https://transfer.sh/{file_name}', data=f, timeout=30)
+            if response.status_code == 200:
+                download_url = response.text.strip()
+            else:
+                download_url = f"Upload Error: {response.status_code}"
+    except Exception as e:
+        download_url = f"Network Error: {str(e)}"
 
-    # 返回 Coze 能读懂的 JSON 格式
     return {"url": download_url}

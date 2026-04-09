@@ -51,7 +51,7 @@ def set_header_border(cell):
     tcPr.append(tcBorders)
 
 def add_separator_line(paragraph):
-    """在段落下发添加一条横向分割线"""
+    """在段落下方添加一条横向分割线"""
     pPr = paragraph._p.get_or_add_pPr()
     pBdr = OxmlElement('w:pBdr')
     bottom = OxmlElement('w:bottom')
@@ -90,7 +90,6 @@ async def generate_document(
     # ------------------ 防弹清洗逻辑 ------------------
     raw = content.strip().replace('```json', '').replace('```', '')
     
-    # 应对极端的嵌套字符串: "{\"\\n \"docx\":\"...\"}"
     if raw.startswith('"') and raw.endswith('"'):
         try: raw = json.loads(raw)
         except: pass
@@ -98,14 +97,12 @@ async def generate_document(
     try:
         data = json.loads(raw)
         if isinstance(data, dict):
-            # 不管 Key 是什么，直接安全抓取第一个字符串作为正文
             for val in data.values():
                 if isinstance(val, str):
                     raw = val
                     break
     except: pass
     
-    # 强制转换换行并剔除剩余毒性字符
     content = str(raw).replace('\\n', '\n')
     content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
     # --------------------------------------------------
@@ -124,6 +121,7 @@ async def generate_document(
 
     # 1. 页眉排版
     header = section.header
+    # 页眉的 add_table 允许设定宽度，所以不会报错
     htable = header.add_table(1, 2, Inches(6.5))
     htable.rows[0].cells[0].vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM
     htable.rows[0].cells[1].vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM
@@ -156,14 +154,14 @@ async def generate_document(
         
         if in_table and not stripped.startswith('|'):
             if table_data and len(table_data) > 0:
-                # 【防护】动态获取最大列数，防止大模型表格错位导致 IndexError 崩溃！
+                # 动态获取最大列数，防止大模型表格错位导致越界崩溃
                 max_cols = max(len(row) for row in table_data)
                 if max_cols > 0:
                     table = doc.add_table(rows=len(table_data), cols=max_cols)
                     set_three_line_borders(table)
                     for r_idx, row in enumerate(table_data):
                         for c_idx, val in enumerate(row):
-                            if c_idx < max_cols: # 越界保护
+                            if c_idx < max_cols: 
                                 cell = table.rows[r_idx].cells[c_idx]
                                 parse_content(cell.paragraphs[0], val, product_name)
                                 if r_idx == 0: set_header_border(cell)
@@ -174,16 +172,27 @@ async def generate_document(
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
             title = stripped[2:]
             today = datetime.now().strftime("%B %d, %Y")
-            full_title = f"{title}\nETERNI {product_name}\nIssue Date: {today}"
-            run = p.add_run(full_title)
-            run.font.size = Pt(18)
-            run.bold = True
+            
+            # 【修复】使用 add_break() 确保大标题的换行完美生效
+            run1 = p.add_run(title)
+            run1.font.size = Pt(18); run1.bold = True
+            p.add_run().add_break()
+            
+            run2 = p.add_run(f"ETERNI {product_name}")
+            run2.font.size = Pt(18); run2.bold = True
+            p.add_run().add_break()
+            
+            run3 = p.add_run(f"Issue Date: {today}")
+            run3.font.size = Pt(18); run3.bold = True
+            
             add_separator_line(doc.add_paragraph()) 
 
         elif stripped.startswith('## '): 
             doc.add_paragraph() 
             add_separator_line(doc.add_paragraph()) 
-            t_h2 = doc.add_table(1, 1, Inches(6.5))
+            
+            # 【核心修复】删除了 Inches(6.5)，防止底层样式识别错误导致 500 崩溃
+            t_h2 = doc.add_table(1, 1) 
             cell = t_h2.rows[0].cells[0]
             set_cell_background(cell, '0033CC')
             run = cell.paragraphs[0].add_run(stripped[3:])
@@ -204,7 +213,7 @@ async def generate_document(
             else:
                 parse_content(p, stripped, product_name)
 
-    # 兜底：如果文件以表格结尾，强制渲染
+    # 兜底：如果文件刚好以表格结尾，强制渲染
     if in_table and table_data and len(table_data) > 0:
         max_cols = max(len(row) for row in table_data)
         if max_cols > 0:

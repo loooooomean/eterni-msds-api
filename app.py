@@ -177,7 +177,12 @@ async def generate_document(
                             for c_idx, val in enumerate(row):
                                 if c_idx < max_cols: 
                                     cell = table.cell(r_idx, c_idx)
-                                    parse_content(get_p(cell), val, product_name)
+                                    # --- 新增居中逻辑 ---
+                                    cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER # 垂直居中
+                                    p = get_p(cell)
+                                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER # 水平居中
+                                    # --------------------
+                                    parse_content(p, val, product_name)
                                     if r_idx == 0: set_header_border(cell)
                 in_table = False; table_data = []
 
@@ -253,7 +258,12 @@ async def generate_document(
                     for c_idx, val in enumerate(row):
                         if c_idx < max_cols:
                             cell = table.cell(r_idx, c_idx)
-                            parse_content(get_p(cell), val, product_name)
+                            # --- 新增居中逻辑 (兜底表格) ---
+                            cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                            p = get_p(cell)
+                            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            # ------------------------------
+                            parse_content(p, val, product_name)
                             if r_idx == 0: set_header_border(cell)
 
         file_name = f"ETERNI_{re.sub(r'[^a-zA-Z0-9]', '_', product_model)}.docx"
